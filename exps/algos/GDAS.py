@@ -36,6 +36,9 @@ def main(xargs):
   # CIFAR Test Transform: [ToTensor(), Normalize(mean, std)]
   train_data, _, xshape, class_num = get_datasets(xargs.dataset, xargs.data_path, -1)
 
+  if xargs.dataset == 'cifar10' or xargs.dataset == 'cifar100':
+    # File path for Train-Validation Split
+    split_Fpath = 'configs/nas-benchmark/cifar-split.txt'
   print(len(train_data), xshape, class_num)
 
 
