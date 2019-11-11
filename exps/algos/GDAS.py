@@ -18,7 +18,7 @@ from models       import  get_search_spaces, get_cell_based_tiny_net
 
 
 def main(xargs):
-
+  print("Lib dir is:", lib_dir)
   # Set CUDA attributes
   assert torch.cuda.is_available(), 'CUDA is not available.'
   torch.backends.cudnn.enabled   = True
