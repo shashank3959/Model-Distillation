@@ -8,26 +8,35 @@ from pathlib import Path
 lib_dir = (Path(__file__).parent / '..' / '..' / 'lib').resolve()
 if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
 from procedures   import prepare_seed, prepare_logger
+from log_utils    import AverageMeter, time_string, convert_secs2time
+from datasets     import get_datasets
 
 # from config_utils import load_config, dict2config, configure2str
 # from datasets     import get_datasets, SearchDataset
-
 # from utils        import get_model_infos, obtain_accuracy
-# from log_utils    import AverageMeter, time_string, convert_secs2time
 # from models       import get_cell_based_tiny_net, get_search_spaces
 
 
 def main(xargs):
+
   # Set CUDA attributes
   assert torch.cuda.is_available(), 'CUDA is not available.'
   torch.backends.cudnn.enabled   = True
   torch.backends.cudnn.benchmark = False
-  # NOTE: .deterministic may affect run-time
+  # NOTE: cudnn.deterministic may affect run-time
   torch.backends.cudnn.deterministic = True
 
+  # Basic Startup stuff
   torch.set_num_threads( xargs.workers )
   prepare_seed(xargs.rand_seed)
   logger = prepare_logger(args)
+
+  # Obtain the train_data (train + val data combined)
+  # CIFAR Train Transform: [RandomHorizontalFlip(), RandomCrop(32, padding=4), ToTensor(), Normalize(mean, std)]
+  # CIFAR Test Transform: [ToTensor(), Normalize(mean, std)]
+  train_data, _, xshape, class_num = get_datasets(xargs.dataset, xargs.data_path, -1)
+
+  print(len(train_data), xshape, class_num)
 
 
 if __name__ == '__main__':
