@@ -3,16 +3,31 @@ import numpy as np
 from copy import deepcopy
 import torch
 import torch.nn as nn
-# from pathlib import Path
-# lib_dir = (Path(__file__).parent / '..' / '..' / 'lib').resolve()
-# if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
+
+from pathlib import Path
+lib_dir = (Path(__file__).parent / '..' / '..' / 'lib').resolve()
+if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
+from procedures   import prepare_seed, prepare_logger
+
 # from config_utils import load_config, dict2config, configure2str
 # from datasets     import get_datasets, SearchDataset
-# from procedures   import prepare_seed, prepare_logger, save_checkpoint, copy_checkpoint, get_optim_scheduler
+
 # from utils        import get_model_infos, obtain_accuracy
 # from log_utils    import AverageMeter, time_string, convert_secs2time
 # from models       import get_cell_based_tiny_net, get_search_spaces
 
+
+def main(xargs):
+  # Set CUDA attributes
+  assert torch.cuda.is_available(), 'CUDA is not available.'
+  torch.backends.cudnn.enabled   = True
+  torch.backends.cudnn.benchmark = False
+  # NOTE: .deterministic may affect run-time
+  torch.backends.cudnn.deterministic = True
+
+  torch.set_num_threads( xargs.workers )
+  prepare_seed(xargs.rand_seed)
+  logger = prepare_logger(args)
 
 
 if __name__ == '__main__':
