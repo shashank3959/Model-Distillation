@@ -82,11 +82,14 @@ class TinyNetworkGDAS(nn.Module):
 
   def forward(self, inputs):
     feature = self.stem(inputs)
+    # print("Output of stem:", feature.shape)
     for i, cell in enumerate(self.cells):
       if isinstance(cell, SearchCell):
         feature = cell.forward_gdas(feature, self.arch_parameters, self.tau)
       else:
         feature = cell(feature)
+      # print("Output of cell:", i, " Shape:", feature.shape)
+        # Check here for ResNetBasicBlock and get logits at end for Distillation
 
     out = self.lastact(feature)
     out = self.global_pooling( out )

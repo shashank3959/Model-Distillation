@@ -7,18 +7,75 @@ import torch.nn as nn
 from pathlib import Path
 lib_dir = (Path(__file__).parent / '..' / '..' / 'lib').resolve()
 if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
-from procedures   import prepare_seed, prepare_logger
+from procedures   import prepare_seed, prepare_logger, get_optim_scheduler
 from log_utils    import AverageMeter, time_string, convert_secs2time
 from datasets     import get_datasets, SearchDataset
 from config_utils import load_config, dict2config, configure2str
 from models       import  get_search_spaces, get_cell_based_tiny_net
+from utils        import get_model_infos, obtain_accuracy
 
-# from utils        import get_model_infos, obtain_accuracy
-# from models       import get_cell_based_tiny_net, get_search_spaces
+
+def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer, epoch_str, print_freq, logger):
+  data_time, batch_time = AverageMeter(), AverageMeter()
+  base_losses, base_top1, base_top5 = AverageMeter(), AverageMeter(), AverageMeter()
+  arch_losses, arch_top1, arch_top5 = AverageMeter(), AverageMeter(), AverageMeter()
+
+  network.train()
+  end = time.time()
+
+  for step, (base_inputs, base_targets, arch_inputs, arch_targets) in enumerate(xloader):
+    scheduler.update(None, 1.0 * step / len(xloader))
+    base_targets = base_targets.cuda(non_blocking=True)
+    arch_targets = arch_targets.cuda(non_blocking=True)
+    # measure data loading time
+    data_time.update(time.time() - end)
+
+    # Alternative Optimization: 1 iteration of weight update, 1 iteration of architecture weight update
+    # Important Design Choice: Add Distillation loss to Weight Update OR Architecture Update OR both?
+    # update the weights
+    w_optimizer.zero_grad()
+    _, logits = network(base_inputs)
+    base_loss = criterion(logits, base_targets)
+    base_loss.backward()
+    torch.nn.utils.clip_grad_norm_(network.parameters(), 5)
+    w_optimizer.step()
+    # record
+    base_prec1, base_prec5 = obtain_accuracy(logits.data, base_targets.data, topk=(1, 5))
+    base_losses.update(base_loss.item(), base_inputs.size(0))
+    base_top1.update(base_prec1.item(), base_inputs.size(0))
+    base_top5.update(base_prec5.item(), base_inputs.size(0))
+
+    # update the architecture-weight
+    a_optimizer.zero_grad()
+    _, logits = network(arch_inputs)
+    arch_loss = criterion(logits, arch_targets)
+    arch_loss.backward()
+    a_optimizer.step()
+    # record
+    arch_prec1, arch_prec5 = obtain_accuracy(logits.data, arch_targets.data, topk=(1, 5))
+    arch_losses.update(arch_loss.item(), arch_inputs.size(0))
+    arch_top1.update(arch_prec1.item(), arch_inputs.size(0))
+    arch_top5.update(arch_prec5.item(), arch_inputs.size(0))
+
+    # measure elapsed time
+    batch_time.update(time.time() - end)
+    end = time.time()
+
+    if step % print_freq == 0 or step + 1 == len(xloader):
+      Sstr = '*SEARCH* ' + time_string() + ' [{:}][{:03d}/{:03d}]'.format(epoch_str, step, len(xloader))
+      Tstr = 'Time {batch_time.val:.2f} ({batch_time.avg:.2f}) Data {data_time.val:.2f} ({data_time.avg:.2f})'.format(
+        batch_time=batch_time, data_time=data_time)
+      Wstr = 'Base [Loss {loss.val:.3f} ({loss.avg:.3f})  Prec@1 {top1.val:.2f} ({top1.avg:.2f}) Prec@5 {top5.val:.2f} ({top5.avg:.2f})]'.format(
+        loss=base_losses, top1=base_top1, top5=base_top5)
+      Astr = 'Arch [Loss {loss.val:.3f} ({loss.avg:.3f})  Prec@1 {top1.val:.2f} ({top1.avg:.2f}) Prec@5 {top5.val:.2f} ({top5.avg:.2f})]'.format(
+        loss=arch_losses, top1=arch_top1, top5=arch_top5)
+      logger.log(Sstr + ' ' + Tstr + ' ' + Wstr + ' ' + Astr)
+    print('At step:', step)
+
+  return base_losses.avg, base_top1.avg, base_top5.avg, arch_losses.avg, arch_top1.avg, arch_top5.avg
 
 
 def main(xargs):
-  print("Lib dir is:", lib_dir)
   # Set CUDA attributes
   assert torch.cuda.is_available(), 'CUDA is not available.'
   torch.backends.cudnn.enabled   = True
@@ -73,8 +130,88 @@ def main(xargs):
                               'space': search_space}, None)
   logger.log('Model Configuration: {:}'.format(model_config))
 
-  # Get the GDAS search model
+  # Get the GDAS search model. This setups the general architecture with all candidate operations
   search_model = get_cell_based_tiny_net(model_config)
+
+  # Get optimizer, scheduler and loss criterion from config
+  w_optimizer, w_scheduler, criterion = get_optim_scheduler(search_model.get_weights(), config)
+
+  # Manually define optimizer for architecture updates. alphas are init. to (1e-3)*randn each
+  a_optimizer = torch.optim.Adam(search_model.get_alphas(), lr=xargs.arch_learning_rate, betas=(0.5, 0.999),
+                                 weight_decay=xargs.arch_weight_decay)
+  logger.log('w-optimizer : {:}'.format(w_optimizer))
+  logger.log('a-optimizer : {:}'.format(a_optimizer))
+  logger.log('w-scheduler : {:}'.format(w_scheduler))
+  logger.log('criterion   : {:}'.format(criterion))
+
+  # Print Model Information
+  flop, param = get_model_infos(search_model, xshape)
+  # logger.log('{:}'.format(search_model))
+  logger.log('FLOP = {:.2f} M, Params = {:.2f} MB'.format(flop, param))
+  logger.log('search_space : {:}'.format(search_space))
+
+  # Enable multi-GPU
+  network, criterion = torch.nn.DataParallel(search_model).cuda(), criterion.cuda()
+
+  last_info, model_base_path, model_best_path = logger.path('info'), logger.path('model'), logger.path('best')
+  # Automatically resume from previous checkpoint
+  # You must use the same seed value as the last checkpoint to continue
+  if last_info.exists():
+    logger.log("=> loading checkpoint of the last-info '{:}' start".format(last_info))
+    last_info = torch.load(last_info)
+    start_epoch = last_info['epoch']
+    checkpoint = torch.load(last_info['last_checkpoint'])
+    genotypes = checkpoint['genotypes']
+    valid_accuracies = checkpoint['valid_accuracies']
+    search_model.load_state_dict(checkpoint['search_model'])
+    w_scheduler.load_state_dict(checkpoint['w_scheduler'])
+    w_optimizer.load_state_dict(checkpoint['w_optimizer'])
+    a_optimizer.load_state_dict(checkpoint['a_optimizer'])
+    logger.log("=> loading checkpoint of the last-info '{:}' start with {:}-th epoch.".format(last_info, start_epoch))
+  else:
+    logger.log("=> did not find the last-info file : {:}".format(last_info))
+    start_epoch, valid_accuracies, genotypes = 0, {'best': -1}, {}
+
+  # Start Training
+  start_time, epoch_time, total_epoch = time.time(), AverageMeter(), config.epochs + config.warmup
+  print(start_time, epoch_time, total_epoch)
+  for epoch in range(start_epoch, total_epoch):
+    w_scheduler.update(epoch, 0.0)
+
+    # Time to completion
+    need_time = 'Time Left: {:}'.format(convert_secs2time(epoch_time.val * (total_epoch - epoch), True))
+    epoch_str = '{:03d}-{:03d}'.format(epoch, total_epoch)
+
+    # Update temperature of logits
+    search_model.set_tau(xargs.tau_max - (xargs.tau_max - xargs.tau_min) * epoch / (total_epoch - 1))
+    logger.log('\n[Search the {:}-th epoch] {:}, tau={:}, LR={:}'.format(epoch_str, need_time, search_model.get_tau(),
+                                                                         min(w_scheduler.get_lr())))
+
+    search_w_loss, search_w_top1, search_w_top5, valid_a_loss, valid_a_top1, valid_a_top5 \
+      = search_func(search_loader, network, criterion, w_scheduler, w_optimizer, a_optimizer, epoch_str,
+                    xargs.print_freq, logger)
+
+    logger.log('[{:}] searching : loss={:.2f}, accuracy@1={:.2f}%, accuracy@5={:.2f}%'.format(epoch_str, search_w_loss,
+                                                                                              search_w_top1,
+                                                                                              search_w_top5))
+    logger.log('[{:}] evaluate  : loss={:.2f}, accuracy@1={:.2f}%, accuracy@5={:.2f}%'.format(epoch_str, valid_a_loss,
+                                                                                              valid_a_top1,
+                                                                                              valid_a_top5 ))
+    # check the best accuracy at end of epoch
+    valid_accuracies[epoch] = valid_a_top1
+    if valid_a_top1 > valid_accuracies['best']:
+      # Save the best genotype so far (The one that gives best validation accuracy so far)
+      valid_accuracies['best'] = valid_a_top1
+      genotypes['best'] = search_model.genotype()
+      find_best = True
+    else:
+      find_best = False
+
+    # Save the genotype at end of this epoch
+    genotypes[epoch] = search_model.genotype()
+    logger.log('<<<--->>> The {:}-th epoch : {:}'.format(epoch_str, genotypes[epoch]))
+
+    break
 
 
 if __name__ == '__main__':
