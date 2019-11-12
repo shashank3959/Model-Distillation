@@ -7,7 +7,7 @@ import torch.nn as nn
 from pathlib import Path
 lib_dir = (Path(__file__).parent / '..' / '..' / 'lib').resolve()
 if str(lib_dir) not in sys.path: sys.path.insert(0, str(lib_dir))
-from procedures   import prepare_seed, prepare_logger, get_optim_scheduler
+from procedures   import prepare_seed, prepare_logger, get_optim_scheduler, save_checkpoint, copy_checkpoint
 from log_utils    import AverageMeter, time_string, convert_secs2time
 from datasets     import get_datasets, SearchDataset
 from config_utils import load_config, dict2config, configure2str
@@ -71,6 +71,7 @@ def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer
         loss=arch_losses, top1=arch_top1, top5=arch_top5)
       logger.log(Sstr + ' ' + Tstr + ' ' + Wstr + ' ' + Astr)
     print('At step:', step)
+    break
 
   return base_losses.avg, base_top1.avg, base_top5.avg, arch_losses.avg, arch_top1.avg, arch_top5.avg
 
@@ -210,6 +211,24 @@ def main(xargs):
     # Save the genotype at end of this epoch
     genotypes[epoch] = search_model.genotype()
     logger.log('<<<--->>> The {:}-th epoch : {:}'.format(epoch_str, genotypes[epoch]))
+
+    # save checkpoint
+    save_path = save_checkpoint({'epoch': epoch + 1,
+                                 'args': deepcopy(xargs),
+                                 'search_model': search_model.state_dict(),
+                                 'w_optimizer': w_optimizer.state_dict(),
+                                 'a_optimizer': a_optimizer.state_dict(),
+                                 'w_scheduler': w_scheduler.state_dict(),
+                                 'genotypes': genotypes,
+                                 'valid_accuracies': valid_accuracies},
+                                model_base_path, logger)
+
+    last_info = save_checkpoint({ 'epoch': epoch + 1,
+                                  'args': deepcopy(args),
+                                  'last_checkpoint': save_path,
+                                }, logger.path('info'), logger)
+
+
 
     break
 
