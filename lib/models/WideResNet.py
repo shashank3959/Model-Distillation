@@ -94,7 +94,6 @@ class WideResNet(nn.Module):
         return [bn1, bn2, bn3]
 
     def get_channel_num(self):
-
         return self.nChannels[1:]
 
     def extract_feature(self, x, preReLU=False):

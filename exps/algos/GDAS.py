@@ -14,15 +14,21 @@ from config_utils import load_config, dict2config, configure2str
 from models       import  get_search_spaces, get_cell_based_tiny_net
 from utils        import get_model_infos, obtain_accuracy
 from setting_utils import load_settings
+from distiller import Distiller
 
 
-def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer, epoch_str, print_freq, logger):
+def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer, epoch_str, print_freq, logger, d_net):
   data_time, batch_time = AverageMeter(), AverageMeter()
   base_losses, base_top1, base_top5 = AverageMeter(), AverageMeter(), AverageMeter()
   arch_losses, arch_top1, arch_top5 = AverageMeter(), AverageMeter(), AverageMeter()
 
   network.train()
   end = time.time()
+
+  # Set distiller to training mode
+  d_net.train()
+  d_net.s_net.train()
+  d_net.t_net.train()
 
   for step, (base_inputs, base_targets, arch_inputs, arch_targets) in enumerate(xloader):
     scheduler.update(None, 1.0 * step / len(xloader))
@@ -31,12 +37,25 @@ def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer
     # measure data loading time
     data_time.update(time.time() - end)
 
+    # Experimental
+    base_inputs = base_inputs.cuda(non_blocking=True)
+    arch_inputs = arch_inputs.cuda(non_blocking=True)
+
     # Alternative Optimization: 1 iteration of weight update, 1 iteration of architecture weight update
     # Important Design Choice: Add Distillation loss to Weight Update OR Architecture Update OR both?
     # update the weights
     w_optimizer.zero_grad()
-    _, logits = network(base_inputs)
+    # _, logits = network(base_inputs)
+
+    # Alternate non-parallel single-GPU implementation, make d_net nn.DataParallel
+    logits, loss_distill = d_net(base_inputs)
+
     base_loss = criterion(logits, base_targets)
+
+    # Adding the distillation loss
+    batch_size = base_inputs.shape[0]
+    base_loss += loss_distill.sum() / batch_size / 1000
+
     base_loss.backward()
     torch.nn.utils.clip_grad_norm_(network.parameters(), 5)
     w_optimizer.step()
@@ -71,6 +90,7 @@ def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer
       Astr = 'Arch [Loss {loss.val:.3f} ({loss.avg:.3f})  Prec@1 {top1.val:.2f} ({top1.avg:.2f}) Prec@5 {top5.val:.2f} ({top5.avg:.2f})]'.format(
         loss=arch_losses, top1=arch_top1, top5=arch_top5)
       logger.log(Sstr + ' ' + Tstr + ' ' + Wstr + ' ' + Astr)
+      print("Distillation Loss %.4f" % (loss_distill.sum() / batch_size))
     # print('At step:', step)
     # break
 
@@ -112,14 +132,10 @@ def main(xargs):
   else:
     raise ValueError('invalid dataset : {:}'.format(xargs.dataset))
 
-  # Move this to another file Path of the pre-trained teacher network
-  teacher_path = os.path.join(xargs.teacher_path, 'WRN28-4_21.09.pt')
-  print('teacher path', teacher_path)
+  # Load teacher model and print teacher information
   t_net = load_settings(xargs)
-  # Print Teacher model information
   flop, param = get_model_infos(t_net, xshape)
-  logger.log('Teacher FLOP = {:.2f} M, Params = {:.2f} MB'.format(flop, param))
-
+  logger.log('Teacher Info: FLOP = {:.2f} M, Params = {:.2f} MB'.format(flop, param))
 
   # Load GDAS specific scheduler and optimizer configs
   config_path = 'configs/algos/GDAS.config'
@@ -127,7 +143,10 @@ def main(xargs):
 
   # Search Data Loader
   search_data = SearchDataset(xargs.dataset, train_data, train_split, valid_split)
-  search_loader = torch.utils.data.DataLoader(search_data, batch_size=config.batch_size, shuffle=True,
+  # batch_size=config.batch_size
+  search_loader = torch.utils.data.DataLoader(search_data, batch_size=32, shuffle=True,
+
+
                                               num_workers=xargs.workers, pin_memory=True)
   logger.log('||||||| {:10s} ||||||| Search-Loader-Num={:}, batch size={:}'.format(xargs.dataset, len(search_loader), config.batch_size))
   logger.log('||||||| {:10s} ||||||| Config={:}'.format(xargs.dataset, config))
@@ -145,8 +164,15 @@ def main(xargs):
   # Get the GDAS search model. This setups the general architecture with all candidate operations
   search_model = get_cell_based_tiny_net(model_config)
 
+  # Module for distillation
+  d_net = Distiller(t_net, search_model).cuda()
+
+  # Parameters for the weight optimizer
+  print("Parameters for d_net:", d_net.Connectors.parameters())
+  w_optim_params = search_model.get_weights() + list(d_net.Connectors.parameters())
+
   # Get optimizer, scheduler and loss criterion from config
-  w_optimizer, w_scheduler, criterion = get_optim_scheduler(search_model.get_weights(), config)
+  w_optimizer, w_scheduler, criterion = get_optim_scheduler(w_optim_params, config)
 
   # Manually define optimizer for architecture updates. alphas are init. to (1e-3)*randn each
   a_optimizer = torch.optim.Adam(search_model.get_alphas(), lr=xargs.arch_learning_rate, betas=(0.5, 0.999),
@@ -156,10 +182,10 @@ def main(xargs):
   logger.log('w-scheduler : {:}'.format(w_scheduler))
   logger.log('criterion   : {:}'.format(criterion))
 
-  # Print Model Information
+  # Print Search Model Information
   flop, param = get_model_infos(search_model, xshape)
-  # logger.log('{:}'.format(search_model))
-  logger.log('FLOP = {:.2f} M, Params = {:.2f} MB'.format(flop, param))
+  # logger.log('Search Model: {:}'.format(search_model))
+  logger.log('Search Model Info: FLOP = {:.2f} M, Params = {:.2f} MB'.format(flop, param))
   logger.log('search_space : {:}'.format(search_space))
 
   # Enable multi-GPU
@@ -201,7 +227,7 @@ def main(xargs):
 
     search_w_loss, search_w_top1, search_w_top5, valid_a_loss, valid_a_top1, valid_a_top5 \
       = search_func(search_loader, network, criterion, w_scheduler, w_optimizer, a_optimizer, epoch_str,
-                    xargs.print_freq, logger)
+                    xargs.print_freq, logger, d_net)
 
     logger.log('[{:}] searching : loss={:.2f}, accuracy@1={:.2f}%, accuracy@5={:.2f}%'.format(epoch_str, search_w_loss,
                                                                                               search_w_top1,
@@ -252,7 +278,7 @@ def main(xargs):
     epoch_time.update(time.time() - start_time)
     start_time = time.time()
 
-    break
+    # break
 
   # Terminate the logger instance
   logger.log('\n' + '-' * 100)
@@ -290,9 +316,7 @@ if __name__ == '__main__':
   parser.add_argument('--print_freq',         type=int,   help='print frequency (default: 200)')
   parser.add_argument('--rand_seed',          type=int,   help='manual seed')
 
-  # Add configuration for choosing a teacher
   args = parser.parse_args()
-
   if args.rand_seed is None or args.rand_seed < 0: args.rand_seed = random.randint(1, 100000)
 
   main(args)

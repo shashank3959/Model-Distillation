@@ -97,3 +97,30 @@ class TinyNetworkGDAS(nn.Module):
     logits = self.classifier(out)
 
     return out, logits
+
+  def extract_feature(self, inputs):
+    intermediate_feats = []
+    feature = self.stem(inputs)
+    # print("Output of stem:", feature.shape)
+    for i, cell in enumerate(self.cells):
+      if isinstance(cell, SearchCell):
+        feature = cell.forward_gdas(feature, self.arch_parameters, self.tau)
+      else:
+        # Save the previous output before proceeding
+        if isinstance(cell, ResNetBasicblock):
+          intermediate_feats.append(feature)
+
+        feature = cell(feature)
+
+    # Extract intermediate feature at the end of the last block
+    intermediate_feats.append(feature)
+
+    out = self.lastact(feature)
+    out = self.global_pooling( out )
+    out = out.view(out.size(0), -1)
+    logits = self.classifier(out)
+
+    return intermediate_feats, logits
+
+  def get_channel_num(self):
+    return [self._C, self._C*2, self._C*4]
