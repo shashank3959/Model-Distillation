@@ -70,8 +70,8 @@ def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer
       Astr = 'Arch [Loss {loss.val:.3f} ({loss.avg:.3f})  Prec@1 {top1.val:.2f} ({top1.avg:.2f}) Prec@5 {top5.val:.2f} ({top5.avg:.2f})]'.format(
         loss=arch_losses, top1=arch_top1, top5=arch_top5)
       logger.log(Sstr + ' ' + Tstr + ' ' + Wstr + ' ' + Astr)
-    print('At step:', step)
-    break
+    # print('At step:', step)
+    # break
 
   return base_losses.avg, base_top1.avg, base_top5.avg, arch_losses.avg, arch_top1.avg, arch_top5.avg
 
@@ -228,9 +228,26 @@ def main(xargs):
                                   'last_checkpoint': save_path,
                                 }, logger.path('info'), logger)
 
+    # If we found the new best validation accuracy in this epoch
+    if find_best:
+      logger.log('<<<--->>> The {:}-th epoch : find the highest validation accuracy : {:.2f}%.'.format(epoch_str, valid_a_top1))
+      copy_checkpoint(model_base_path, model_best_path, logger)
 
+    # Latest Arch parameters
+    with torch.no_grad():
+      logger.log('arch-parameters :\n{:}'.format( nn.functional.softmax(search_model.arch_parameters, dim=-1).cpu() ))
+
+    # measure elapsed time
+    epoch_time.update(time.time() - start_time)
+    start_time = time.time()
 
     break
+
+  # Terminate the logger instance
+  logger.log('\n' + '-' * 100)
+  logger.close()
+
+
 
 
 if __name__ == '__main__':
