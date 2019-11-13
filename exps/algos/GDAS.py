@@ -13,6 +13,7 @@ from datasets     import get_datasets, SearchDataset
 from config_utils import load_config, dict2config, configure2str
 from models       import  get_search_spaces, get_cell_based_tiny_net
 from utils        import get_model_infos, obtain_accuracy
+from setting_utils import load_settings
 
 
 def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer, epoch_str, print_freq, logger):
@@ -89,6 +90,7 @@ def main(xargs):
   prepare_seed(xargs.rand_seed)
   logger = prepare_logger(args)
 
+
   # Obtain the train_data (train + val data combined)
   # CIFAR Train Transform: [RandomHorizontalFlip(), RandomCrop(32, padding=4), ToTensor(), Normalize(mean, std)]
   # CIFAR Test Transform: [ToTensor(), Normalize(mean, std)]
@@ -109,6 +111,15 @@ def main(xargs):
     logger.log('Load split file from {:}'.format(split_Fpath))
   else:
     raise ValueError('invalid dataset : {:}'.format(xargs.dataset))
+
+  # Move this to another file Path of the pre-trained teacher network
+  teacher_path = os.path.join(xargs.teacher_path, 'WRN28-4_21.09.pt')
+  print('teacher path', teacher_path)
+  t_net = load_settings(xargs)
+  # Print Teacher model information
+  flop, param = get_model_infos(t_net, xshape)
+  logger.log('Teacher FLOP = {:.2f} M, Params = {:.2f} MB'.format(flop, param))
+
 
   # Load GDAS specific scheduler and optimizer configs
   config_path = 'configs/algos/GDAS.config'
@@ -251,10 +262,12 @@ def main(xargs):
 
 
 if __name__ == '__main__':
+  # path settings
   parser = argparse.ArgumentParser("GDAS")
   parser.add_argument('--data_path',          type=str,   help='Path to dataset')
   parser.add_argument('--dataset',            type=str,   choices=['cifar10', 'cifar100', 'ImageNet16-120'],
                       help='Choose between Cifar10/100 and ImageNet-16.')
+  parser.add_argument('--teacher_path', type=str, help='Path to the pretrained teacher model')
 
   # channels and number-of-cells
   parser.add_argument('--search_space_name',  type=str,   help='The search space name.')
@@ -277,7 +290,9 @@ if __name__ == '__main__':
   parser.add_argument('--print_freq',         type=int,   help='print frequency (default: 200)')
   parser.add_argument('--rand_seed',          type=int,   help='manual seed')
 
+  # Add configuration for choosing a teacher
   args = parser.parse_args()
+
   if args.rand_seed is None or args.rand_seed < 0: args.rand_seed = random.randint(1, 100000)
 
   main(args)

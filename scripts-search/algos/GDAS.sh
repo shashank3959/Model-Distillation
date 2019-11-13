@@ -29,6 +29,8 @@ else
   data_path="$TORCH_HOME/cifar.python/ImageNet16"
 fi
 
+teacher_path="$TORCH_HOME"
+
 save_dir=./output/cell-search-tiny/GDAS-${dataset}
 
 # tau_max and tau_min are the max and min temperatures in softmax. The temperature is annealed from max to min.
@@ -36,6 +38,7 @@ save_dir=./output/cell-search-tiny/GDAS-${dataset}
 OMP_NUM_THREADS=4 python ./exps/algos/GDAS.py \
 	--save_dir ${save_dir} --max_nodes ${max_nodes} --channel ${channel} --num_cells ${num_cells} \
 	--dataset ${dataset} --data_path ${data_path} \
+	--teacher_path ${teacher_path} \
 	--search_space_name aa-nas \
 	--tau_max 10 --tau_min 0.1 \
 	--arch_learning_rate 0.0003 --arch_weight_decay 0.001 \
