@@ -11,7 +11,7 @@ if [ "$#" -ne 2 ] ;then
 fi
 if [ "$TORCH_HOME" = "" ]; then
   echo "Must set TORCH_HOME environment variable for data dir saving"
-  TORCH_HOME="~/.torch".
+  TORCH_HOME="./data"
   echo "Default TORCH_HOME: $TORCH_HOME"
 else
   echo "TORCH_HOME : $TORCH_HOME"
