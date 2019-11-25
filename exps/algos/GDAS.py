@@ -54,6 +54,7 @@ def search_func(xloader, network, criterion, scheduler, w_optimizer, a_optimizer
 
     # Adding the distillation loss
     batch_size = base_inputs.shape[0]
+    # Obviously, if we don't add this, the distillation loss won't optimize
     base_loss += loss_distill.sum() / batch_size / 1000
 
     base_loss.backward()
